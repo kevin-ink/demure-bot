@@ -5,15 +5,11 @@ import requests
 from discord.ext import commands, tasks
 import datetime
 import json
-
-try:
-    import keys
-except ModuleNotFoundError:
-    print('Error: keys.py not found. Bot requires the authentication present in keys.py in order to work.')
+import os
 
 # INITIALIZE TOKENS
-token = keys.bot_token
-itadauth = keys.itad_token # IsThereAnyDeal
+token = os.getenv("BOT_TOKEN")
+itadauth = os.getenv("ITAD_TOKEN")
 
 # SETUP INTENTS
 intents = discord.Intents.default()
@@ -23,9 +19,16 @@ intents.message_content = True
 logger = logging.getLogger("bot")
 logger.setLevel(logging.INFO)
 formatter = logging.Formatter('%(asctime)s:%(levelname)s:%(name)s: %(message)s')
+
+# CONSOLE HANDLER
 console_handler = logging.StreamHandler()
 console_handler.setFormatter(formatter)
 logger.addHandler(console_handler)
+
+# FILE HANDLER
+file_handler = logging.FileHandler("runtime.log", mode='a')
+file_handler.setFormatter(formatter)
+logger.addHandler(file_handler)
 
 # SETUP TIME
 time = datetime.time(hour=20)
@@ -55,6 +58,7 @@ async def shutdown(ctx):
     '''Shuts down bot after saving data to disc (admin only command)'''
     if not ctx.author.guild_permissions.administrator:
         return
+    logger.info(f"Bot shutting down from shutdown command.")
     itad_cog = bot.get_cog("IsThereAnyDeal")
     itad_cog.save()
     await bot.close()
@@ -170,7 +174,7 @@ class IsThereAnyDeal(commands.Cog):
             await ctx.send(embed=discord.Embed(title=name, description=f"Current best price: ${deal_price} {shop_name}"))
             return
         
-        msg = await ctx.send(embed=discord.Embed(title=name, description=f"There are currently no deals on {name}.\nRegular price: ${reg_price} {shop_name}\n \
+        msg = await ctx.send(embed=discord.Embed(title=name, description=f"There are currently no deals on {name}.\nRegular price: ${reg_price} from {shop_name}\n \
                                                React to this message with 👀 if you want to be reminded when this game goes on sale anywhere."))
         
         # check for reaction
