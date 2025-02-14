@@ -11,16 +11,76 @@ class IsThereAnyDeal(commands.Cog):
         self.ERROR_MSG = "Service error. Try again later."
         self.BACKEND_URL = "http://127.0.0.1:8000/api/wishlist/"
         self.HEADER = {
-            'Authorization ': f'Token {db_token}'
+            'Authorization': f'Token {db_token}'
         }
+
+    @commands.command()
+    async def unwish(self, ctx, *, name: str = None):
+        if not name:
+            # name argument not provided
+            await ctx.send("```Usage: !unwish [game name]```")
+            return
+        
+        url = f"{self.BACKEND_URL}{ctx.author.id}/"
+        try:
+            response = requests.get(url, headers=self.HEADER)
+            if response.status_code == 404:
+                await ctx.send(embed=discord.Embed(description="You do not have a wishlist."))
+                return
+            elif response.status_code != 200:
+                logger.info(f"Bad Response: \n{response.content}")
+                await ctx.send(embed=discord.Embed(description="Unexpected error retrieving your wishlist."))
+                return
+        except:
+            logger.info(f"Error connecting to database.")
+            await ctx.send(embed=discord.Embed(description="Unknown error occured when retrieving your wishlist."))
+            return
+        wishlist = response.json()
+        games = wishlist.get('games', [])
+        game_in_wishlist = next((game for game in games if game['name'] == name), None)
+        if not game_in_wishlist:
+            await ctx.send(embed=discord.Embed(description=f"{name} is not currently being tracked for you."))
+            return
+    
+        game_data = {"name": name}
+
+        try:
+            response = requests.delete(f"{url}remove_game/", data=game_data, headers=self.HEADER)
+            if response.status_code == 200:
+                await ctx.send(embed=discord.Embed(description=f"{name} has been removed from your wishlist."))
+            else:
+                logger.info(f"Bad Response: \n{response.content}")
+                await ctx.send(embed=discord.Embed(description="Unexpected error removing game from your wishlist."))
+        except:
+            logger.info(f"Error connecting to database.")
+            await ctx.send(embed=discord.Embed(description="Unknown error occured when removing game from your wishlist."))
+            return
 
     @commands.command()
     async def wishlist(self, ctx):
         """Display user's wishlist."""
-        headers = {
-            'Authorization': f'Token {db_token}'
-        }
-        url = f"{IsThereAnyDeal.BACKEND_URL}{ctx.author.id}/"
+        embed = await ctx.send(embed=discord.Embed(description="Retrieving your wishlist..."))
+
+        url = f"{self.BACKEND_URL}{ctx.author.id}/"
+        try:
+            response = requests.get(url, headers=self.HEADER)
+            if response.status_code == 404:
+                await self.create_wishlist(ctx)
+            elif response.status_code != 200:
+                logger.info(f"Bad Response: \n{response.content}")
+                await embed.edit(embed=discord.Embed(description="Unexpected error retrieving your wishlist."))
+                return
+        except:
+            logger.info(f"Error connecting to database.")
+            await embed.edit(embed=discord.Embed(description="Unknown error occured when retrieving your wishlist."))
+            return
+        wishlist = response.json()
+        games = wishlist.get('games', [])
+        if not games:
+            await embed.edit(embed=discord.Embed(description="Your wishlist is currently empty."))
+            return
+        game_list = "\n".join([game['name'] for game in games])
+        await embed.edit(embed=discord.Embed(title=f"{ctx.author.name.replace("_"," ")}'s Wishlist", description=game_list))
     
     async def create_wishlist(self, ctx):
         wishlist_data = {
@@ -86,7 +146,7 @@ class IsThereAnyDeal(commands.Cog):
                                         f"Regular price: ${reg_price} from {shop_name}\n"
                                         f"React with 👀 to add the game to your wishlist."))
 
-        await self.handle_reaction(ctx, msg, game_id, game_name)
+        await self.handle_reaction(ctx, msg, game_name)
     
     def get_game_by_name(self, name, api_key):
         """Fetch game details by name."""
@@ -101,7 +161,7 @@ class IsThereAnyDeal(commands.Cog):
         response = requests.post(f"{self.BASE_URL}/games/overview/v2", params=params, json=body)
         return response.json() if response.status_code == 200 else None
 
-    async def handle_reaction(self, ctx, msg, game_id, name):
+    async def handle_reaction(self, ctx, msg, game_name):
         # check for reaction
         def check(reaction, user):
             return user == ctx.author and (reaction.emoji) == '👀' and reaction.message.id == msg.id
@@ -112,17 +172,13 @@ class IsThereAnyDeal(commands.Cog):
         except asyncio.TimeoutError:
             return
         
-        await self.add_game_to_wishlist(ctx, name, user.id, user.name)
+        await self.add_game_to_wishlist(ctx, game_name, user.id)
     
     async def send_error(self, ctx, message):
         """Send a standardized error message."""
         if message == self.ERROR_MSG:
             logger.info(f"Service error occurred from IsThereAnyDeal API.")
         await ctx.send(embed=discord.Embed(description=message))
-
-    @commands.command()
-    async def testdb(self, ctx):
-        await self.add_game_to_wishlist(ctx, "Test Game", ctx.author.id, ctx.author.name)
 
     async def add_game_to_wishlist(self, ctx, game_name, user_id):
         headers = {
@@ -143,18 +199,15 @@ class IsThereAnyDeal(commands.Cog):
 
         try:
             response = requests.get(url, headers=headers)
-            await self.create_wishlist(ctx)
-            await add_game()
+            if response.status_code == 404:
+                await self.create_wishlist(ctx)
+            elif response.status_code != 200:
+                logger.info(f"Bad Response: \n{response.content}")
+                await ctx.send(embed=discord.Embed(description="Unexpected error retrieving your wishlist."))
+                return
         except:
             logger.info(f"Error connecting to database.")
             await ctx.send(embed=discord.Embed(description="Unknown error occured when adding game to your wishlist."))
-            return
-
-        if response.status_code == 404:
-            
-                return
-        elif response.status_code != 200:
-            logger.info(f"Bad Response: \n{response.content}")
             return
         
         wishlist = response.json()

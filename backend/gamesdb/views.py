@@ -27,3 +27,25 @@ class WishlistViewSet(viewsets.ModelViewSet):
 
         # Return the updated wishlist
         return Response(self.get_serializer(wishlist).data)
+    
+    @action(detail=True, methods=['delete'], url_path='remove_game')
+    def remove_game(self, request, pk=None):
+        wishlist = self.get_object()
+
+        # Get the game data from the request
+        game_name = request.data.get('name', None)
+        
+        if not game_name:
+            raise ValidationError("Game data must include a 'name' field.")
+        
+        # Find the game based on the name
+        try:
+            game = Game.objects.get(name=game_name)
+        except Game.DoesNotExist:
+            raise ValidationError("Game not found.")
+        
+        # Remove the game from the wishlist
+        wishlist.games.remove(game)
+
+        # Return the updated wishlist
+        return Response(self.get_serializer(wishlist).data)
