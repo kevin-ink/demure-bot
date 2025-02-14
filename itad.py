@@ -1,7 +1,7 @@
 from discord.ext import commands, tasks
 import discord
-import requests
 import asyncio
+import aiohttp
 from utils import logger, itad_auth, db_token
 
 class IsThereAnyDeal(commands.Cog):
@@ -14,47 +14,40 @@ class IsThereAnyDeal(commands.Cog):
             'Authorization': f'Token {db_token}'
         }
 
+    async def fetch(self, session, url, method='GET', **kwargs):
+        async with session.request(method, url, **kwargs) as response:
+            if response.status == 200:
+                return await response.json()
+            else:
+                logger.info(f"Bad Response: \n{await response.text()}")
+                return None
+
     @commands.command()
     async def unwish(self, ctx, *, name: str = None):
         if not name:
-            # name argument not provided
             await ctx.send("```Usage: !unwish [game name]```")
             return
         
+        embed = await ctx.send(embed=discord.Embed(description=f"Removing {name} from your wishlist..."))
         url = f"{self.BACKEND_URL}{ctx.author.id}/"
-        try:
-            response = requests.get(url, headers=self.HEADER)
-            if response.status_code == 404:
-                await ctx.send(embed=discord.Embed(description="You do not have a wishlist."))
+        async with aiohttp.ClientSession(header=self.HEADER) as session:
+            wishlist = await self.fetch(session, url)
+            if not wishlist:
+                await embed.edit(embed=discord.Embed(description="Unexpected error retrieving your wishlist."))
                 return
-            elif response.status_code != 200:
-                logger.info(f"Bad Response: \n{response.content}")
-                await ctx.send(embed=discord.Embed(description="Unexpected error retrieving your wishlist."))
+            
+            games = wishlist.get('games', [])
+            game_in_wishlist = next((game for game in games if game['name'] == name), None)
+            if not game_in_wishlist:
+                await embed.edit(embed=discord.Embed(description=f"{name} is not currently being tracked for you."))
                 return
-        except:
-            logger.info(f"Error connecting to database.")
-            await ctx.send(embed=discord.Embed(description="Unknown error occured when retrieving your wishlist."))
-            return
-        wishlist = response.json()
-        games = wishlist.get('games', [])
-        game_in_wishlist = next((game for game in games if game['name'] == name), None)
-        if not game_in_wishlist:
-            await ctx.send(embed=discord.Embed(description=f"{name} is not currently being tracked for you."))
-            return
-    
-        game_data = {"name": name}
+        
+        response = await self.fetch(session, f"{url}remove_game/", method='DELETE', json={"name": name})
+        if response:
+            await embed.edit(embed=discord.Embed(description=f"{name} has been removed from your wishlist."))
+        else:
+            await embed.edit(embed=discord.Embed(description="Unexpected error removing game from your wishlist."))
 
-        try:
-            response = requests.delete(f"{url}remove_game/", data=game_data, headers=self.HEADER)
-            if response.status_code == 200:
-                await ctx.send(embed=discord.Embed(description=f"{name} has been removed from your wishlist."))
-            else:
-                logger.info(f"Bad Response: \n{response.content}")
-                await ctx.send(embed=discord.Embed(description="Unexpected error removing game from your wishlist."))
-        except:
-            logger.info(f"Error connecting to database.")
-            await ctx.send(embed=discord.Embed(description="Unknown error occured when removing game from your wishlist."))
-            return
 
     @commands.command()
     async def wishlist(self, ctx):
@@ -62,52 +55,42 @@ class IsThereAnyDeal(commands.Cog):
         embed = await ctx.send(embed=discord.Embed(description="Retrieving your wishlist..."))
 
         url = f"{self.BACKEND_URL}{ctx.author.id}/"
-        try:
-            response = requests.get(url, headers=self.HEADER)
-            if response.status_code == 404:
-                await self.create_wishlist(ctx)
-            elif response.status_code != 200:
-                logger.info(f"Bad Response: \n{response.content}")
+        async with aiohttp.ClientSession(headers=self.HEADER) as session:
+            wishlist = await self.fetch(session, url)
+            if not wishlist:
                 await embed.edit(embed=discord.Embed(description="Unexpected error retrieving your wishlist."))
                 return
-        except:
-            logger.info(f"Error connecting to database.")
-            await embed.edit(embed=discord.Embed(description="Unknown error occured when retrieving your wishlist."))
-            return
-        wishlist = response.json()
-        games = wishlist.get('games', [])
-        if not games:
-            await embed.edit(embed=discord.Embed(description="Your wishlist is currently empty."))
-            return
-        game_list = "\n".join([game['name'] for game in games])
-        await embed.edit(embed=discord.Embed(title=f"{ctx.author.name.replace("_"," ")}'s Wishlist", description=game_list))
+            
+            games = wishlist.get('games', [])
+            if not games:
+                await embed.edit(embed=discord.Embed(description="Your wishlist is currently empty."))
+                return
+            
+            game_list = "\n".join([game['name'] for game in games])
+            await embed.edit(embed=discord.Embed(title=f"{ctx.author.name.replace('_', ' ')}'s Wishlist", description=game_list))
     
     async def create_wishlist(self, ctx):
         wishlist_data = {
             "userid": ctx.author.id,
             "username": ctx.author.name
         }
-        create_wishlist_response = requests.post(self.BACKEND_URL, data=wishlist_data, headers=self.HEADER)
-        if create_wishlist_response.status_code == 201:
-            logger.info(f"Wishlist created for {ctx.author.name}.")
-        else:
-            logger.info(f"Bad Response: \n{create_wishlist_response.content}")
-            logger.info("Error creating wishlist.")
-        
+        async with aiohttp.ClientSession(headers=self.HEADER) as session:
+            response = await self.fetch(session, self.BACKEND_URL, method='POST', json=wishlist_data)
+            if response:
+                logger.info(f"Wishlist created for {ctx.author.name}.")
+            else:
+                logger.info("Error creating wishlist.")
 
     @commands.command()
     async def itad(self, ctx, *, name: str = None):
         """Find current best price of game by name."""
-
         if not name:
-            # name argument not provided
             await ctx.send("```Usage: !itad [name]```")
             return
     
         embed = discord.Embed(description=f"Searching for {name} on IsThereAnyDeal...")
         embed_msg = await ctx.send(embed=embed)
         
-        # fetch game details
         game_data = self.get_game_by_name(name, itad_auth)
         if not game_data or not game_data.get("found"):
             await self.send_error(ctx, "Game could not be identified. Double-check your spelling and try again.")
@@ -118,7 +101,6 @@ class IsThereAnyDeal(commands.Cog):
         game_id = game.get("id")
         game_name = game.get("title")
         
-        # fetch game price
         price_data = self.get_game_prices(game_id, itad_auth)
         if not price_data:
             await embed_msg.delete()
@@ -148,25 +130,23 @@ class IsThereAnyDeal(commands.Cog):
 
         await self.handle_reaction(ctx, msg, game_name)
     
-    def get_game_by_name(self, name, api_key):
+    async def get_game_by_name(self, name):
         """Fetch game details by name."""
-        payload = {"title": name, "key": api_key}
-        response = requests.get(f"{self.BASE_URL}/games/lookup/v1", params=payload)
-        return response.json() if response.status_code == 200 else None
+        async with aiohttp.ClientSession() as session:
+            payload = {"title": name, "key": itad_auth}
+            return await self.fetch(session, f"{self.BASE_URL}/games/lookup/v1", params=payload)
     
-    def get_game_prices(self, game_id, api_key):
+    async def get_game_prices(self, game_id):
         """Fetch game prices by game ID."""
-        params = {"key": api_key}
-        body = [game_id]
-        response = requests.post(f"{self.BASE_URL}/games/overview/v2", params=params, json=body)
-        return response.json() if response.status_code == 200 else None
+        async with aiohttp.ClientSession() as session:
+            params = {"key": itad_auth}
+            body = [game_id]
+            return await self.fetch(session, f"{self.BASE_URL}/games/prices/", params=params, json=body)
 
     async def handle_reaction(self, ctx, msg, game_name):
-        # check for reaction
         def check(reaction, user):
             return user == ctx.author and (reaction.emoji) == '👀' and reaction.message.id == msg.id
         
-        # if reaction meets criteria, add game to tracking
         try:
             reaction, user = await self.bot.wait_for('reaction_add', timeout=60.0, check=check)
         except asyncio.TimeoutError:
@@ -181,40 +161,20 @@ class IsThereAnyDeal(commands.Cog):
         await ctx.send(embed=discord.Embed(description=message))
 
     async def add_game_to_wishlist(self, ctx, game_name, user_id):
-        headers = {
-            'Authorization': f'Token {db_token}'
-        }
         url = f"{self.BACKEND_URL}{user_id}/"
-
-        async def add_game():
-            add_game_url = f"{url}add_game/"
-            add_game_data = {"name": game_name}
-            add_game_response = requests.post(add_game_url, data=add_game_data, headers=headers)
-            if add_game_response.status_code == 200:
-                await ctx.send(embed=discord.Embed(description=f"{game_name} has been added to your wishlist and you will be notified whenever the game goes on sale anywhere."))
-            else:
-                logger.info(f"Error adding {game_name} to wishlist for {user_id}.")
-                logger.info(f"Bad Response: \n{add_game_response.content}")
-                await ctx.send(embed=discord.Embed(description=f"Unexpected error adding game to your wishlist.")) 
-
-        try:
-            response = requests.get(url, headers=headers)
-            if response.status_code == 404:
-                await self.create_wishlist(ctx)
-            elif response.status_code != 200:
-                logger.info(f"Bad Response: \n{response.content}")
+        async with aiohttp.ClientSession(headers=self.HEADER) as session:
+            wishlist = await self.fetch(session, url)
+            if not wishlist:
                 await ctx.send(embed=discord.Embed(description="Unexpected error retrieving your wishlist."))
                 return
-        except:
-            logger.info(f"Error connecting to database.")
-            await ctx.send(embed=discord.Embed(description="Unknown error occured when adding game to your wishlist."))
-            return
-        
-        wishlist = response.json()
-        games = wishlist.get('games', [])
-        game_in_wishlist = any(game['name'] == game_name for game in games)
-        
-        if game_in_wishlist:
-            await ctx.send(embed=discord.Embed(description=f"{game_name} is already being tracked for you. Use command !wishlist to see your currently tracked games."))
-        else:
-            await add_game()
+            
+            games = wishlist.get('games', [])
+            if any(game['name'] == game_name for game in games):
+                await ctx.send(embed=discord.Embed(description=f"{game_name} is already being tracked for you."))
+                return
+            
+            response = await self.fetch(session, f"{url}add_game/", method='POST', json={"name": game_name})
+            if response:
+                await ctx.send(embed=discord.Embed(description=f"{game_name} has been added to your wishlist and you will be notified whenever the game goes on sale anywhere."))
+            else:
+                await ctx.send(embed=discord.Embed(description="Unexpected error adding game to your wishlist."))
